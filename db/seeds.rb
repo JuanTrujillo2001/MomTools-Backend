@@ -14,6 +14,12 @@ user.password = "Juanj200"
 user.password_confirmation = "Juanj200"
 user.save!
 
+other = User.find_or_initialize_by(email: "Fannyr127@hotmail.com")
+other.name = "Fanny Rodriguez"
+other.password = "Juanj2001"
+other.password_confirmation = "Juanj2001"
+other.save!
+
 CatalogType.find_or_create_by!(name: "xlsx") do |ct|
   ct.description = "Excel"
 end

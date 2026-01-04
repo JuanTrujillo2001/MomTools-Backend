@@ -29,10 +29,11 @@ module Backend
     # Skip views, helpers and assets when generating a new resource.
     config.api_only = true
 
-    # CORS configuration to allow SPA frontend (CloudFront + local dev) to call this API
+    # CORS configuration to allow SPA frontend to call this API
+    # (temporarily allow any origin; we can tighten to specific domains later)
     config.middleware.insert_before 0, Rack::Cors do
       allow do
-        origins 'https://d3eny2ln23jhtb.cloudfront.net', 'http://localhost:5173'
+        origins '*'
 
         resource '*',
                  headers: :any,

@@ -28,5 +28,17 @@ module Backend
     # Middleware like session, flash, cookies can be added back manually.
     # Skip views, helpers and assets when generating a new resource.
     config.api_only = true
+
+    # CORS configuration to allow SPA frontend (CloudFront + local dev) to call this API
+    config.middleware.insert_before 0, Rack::Cors do
+      allow do
+        origins 'https://d3eny2ln23jhtb.cloudfront.net', 'http://localhost:5173'
+
+        resource '*',
+                 headers: :any,
+                 expose: ['Authorization'],
+                 methods: [:get, :post, :put, :patch, :delete, :options, :head]
+      end
+    end
   end
 end

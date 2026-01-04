@@ -7,7 +7,8 @@
 
 Rails.application.config.middleware.insert_before 0, Rack::Cors do
   allow do
-    origins "http://localhost:5173"
+    # Permitir CloudFront y desarrollo local
+    origins "https://d3eny2ln23jhtb.cloudfront.net", "http://localhost:5173"
 
     resource "*",
       headers: :any,

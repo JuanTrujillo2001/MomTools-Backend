@@ -46,10 +46,9 @@ class FileCache
     end
 
     def path_for(blob)
-      # Use checksum to detect if file changed (re-upload)
-      # Replace slashes in key to avoid creating subdirectories
       safe_key = blob.key.gsub("/", "_")
-      CACHE_DIR.join("#{safe_key}_#{blob.checksum}#{File.extname(blob.filename.to_s)}")
+      safe_checksum = blob.checksum.to_s.gsub(/[^0-9A-Za-z\-_.]/, "_")
+      CACHE_DIR.join("#{safe_key}_#{safe_checksum}#{File.extname(blob.filename.to_s)}")
     end
 
     def valid_cache?(path, ttl)

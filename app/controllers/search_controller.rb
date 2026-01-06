@@ -3,6 +3,8 @@ class SearchController < ApplicationController
     q = params[:q].to_s.strip
     mode = params[:mode].to_s.strip.downcase
     mode = "exact" unless %w[exact contains].include?(mode)
+    search_by = params[:search_by].to_s.strip.downcase
+    search_by = "code" unless %w[code description].include?(search_by)
     limit = params[:limit].to_i
     limit = 200 if limit <= 0
 
@@ -12,15 +14,28 @@ class SearchController < ApplicationController
 
     query_normalized = q.upcase
 
-    Rails.logger.info("[search] start q=#{q.inspect} mode=#{mode} limit=#{limit} user_id=#{current_user.id}")
+    Rails.logger.info("[search] start q=#{q.inspect} mode=#{mode} search_by=#{search_by} limit=#{limit} user_id=#{current_user.id}")
 
     # Search in indexed catalog_items through sheet_configs
     sheet_config_ids = SheetConfig.where(catalog_id: current_user.catalogs.pluck(:id)).pluck(:id)
 
-    items = if mode == "contains"
-      CatalogItem.where(sheet_config_id: sheet_config_ids).where("code ILIKE ?", "%#{q}%")
+    items_scope = CatalogItem.where(sheet_config_id: sheet_config_ids)
+
+    items = if search_by == "description"
+      if mode == "contains"
+        terms = q.split(/\s+/).map(&:strip).reject(&:blank?)
+        terms.reduce(items_scope) do |scope, term|
+          scope.where("description ILIKE ?", "%#{term}%")
+        end
+      else
+        items_scope.where("UPPER(description) = ?", query_normalized)
+      end
     else
-      CatalogItem.where(sheet_config_id: sheet_config_ids).where("UPPER(code) = ?", query_normalized)
+      if mode == "contains"
+        items_scope.where("code ILIKE ?", "%#{q}%")
+      else
+        items_scope.where("UPPER(code) = ?", query_normalized)
+      end
     end
 
     # Order by price ascending (nulls last), then by sheet/row
@@ -46,13 +61,15 @@ class SearchController < ApplicationController
     end
 
     Rails.logger.info("[search] done results=#{results.size}")
-    render json: { query: q, mode: mode, limit: limit, results: results }, status: :ok
+    render json: { query: q, mode: mode, search_by: search_by, limit: limit, results: results }, status: :ok
   end
 
   def export
     q = params[:q].to_s.strip
     mode = params[:mode].to_s.strip.downcase
     mode = "exact" unless %w[exact contains].include?(mode)
+    search_by = params[:search_by].to_s.strip.downcase
+    search_by = "code" unless %w[code description].include?(search_by)
     limit = params[:limit].to_i
     limit = 1000 if limit <= 0
 
@@ -63,10 +80,23 @@ class SearchController < ApplicationController
     query_normalized = q.upcase
     sheet_config_ids = SheetConfig.where(catalog_id: current_user.catalogs.pluck(:id)).pluck(:id)
 
-    items = if mode == "contains"
-      CatalogItem.where(sheet_config_id: sheet_config_ids).where("code ILIKE ?", "%#{q}%")
+    items_scope = CatalogItem.where(sheet_config_id: sheet_config_ids)
+
+    items = if search_by == "description"
+      if mode == "contains"
+        terms = q.split(/\s+/).map(&:strip).reject(&:blank?)
+        terms.reduce(items_scope) do |scope, term|
+          scope.where("description ILIKE ?", "%#{term}%")
+        end
+      else
+        items_scope.where("UPPER(description) = ?", query_normalized)
+      end
     else
-      CatalogItem.where(sheet_config_id: sheet_config_ids).where("UPPER(code) = ?", query_normalized)
+      if mode == "contains"
+        items_scope.where("code ILIKE ?", "%#{q}%")
+      else
+        items_scope.where("UPPER(code) = ?", query_normalized)
+      end
     end
 
     items = items.order(Arel.sql("COALESCE(price, 999999999) ASC"), :sheet_config_id, :sheet_name, :row_number)

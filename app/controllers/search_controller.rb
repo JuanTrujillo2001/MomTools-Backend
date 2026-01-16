@@ -41,14 +41,17 @@ class SearchController < ApplicationController
     # Order by price ascending (nulls last), then by sheet/row
     items = items.order(Arel.sql("COALESCE(price, 999999999) ASC"), :sheet_config_id, :sheet_name, :row_number)
                  .limit(limit)
-                 .includes(sheet_config: { catalog: :catalog_type })
+                 .includes(sheet_config: { catalog: [:catalog_type, :supplier] })
 
     results = items.map do |item|
       catalog = item.sheet_config.catalog
+      supplier_name = catalog.supplier&.name.to_s.strip
+      file_name = catalog.file.attached? ? catalog.file.filename.to_s : ''
+      label = [supplier_name.presence, file_name.presence].compact.join(' - ')
       {
         catalog_item_id: item.id,
         catalog_id: catalog.id,
-        catalog_name: catalog.name,
+        catalog_name: label,
         catalog_type: catalog.catalog_type&.name,
         sheet_config_id: item.sheet_config_id,
         sheet_name: item.sheet_name,
@@ -56,7 +59,8 @@ class SearchController < ApplicationController
         code: item.code,
         codes: [item.code],
         descriptions: item.description.present? ? [item.description] : [],
-        prices: item.price.present? ? [format('%.2f', item.price.to_f)] : []
+        prices: item.price.present? ? [format('%.2f', item.price.to_f)] : [],
+        brand: item.brand
       }
     end
 
@@ -101,24 +105,27 @@ class SearchController < ApplicationController
 
     items = items.order(Arel.sql("COALESCE(price, 999999999) ASC"), :sheet_config_id, :sheet_name, :row_number)
                  .limit(limit)
-                 .includes(sheet_config: { catalog: :catalog_type })
+                 .includes(sheet_config: { catalog: [:catalog_type, :supplier] })
 
     package = Axlsx::Package.new
     workbook = package.workbook
 
     workbook.add_worksheet(name: "Resultados") do |sheet|
       # Header row
-      sheet.add_row ["Código", "Descripción", "Precio", "Catálogo", "Tipo", "Hoja", "Fila", "Archivo Original"]
+      sheet.add_row ["Código", "Descripción", "Precio", "Marca", "Catálogo", "Tipo", "Hoja", "Fila", "Archivo Original"]
 
       # Data rows
       items.each do |item|
         catalog = item.sheet_config.catalog
+        supplier_name = catalog.supplier&.name.to_s.strip
         original_filename = catalog.file.attached? ? catalog.file.filename.to_s : ''
+        label = [supplier_name.presence, original_filename.presence].compact.join(' - ')
         sheet.add_row [
           item.code,
           item.description,
           item.price.present? ? format('%.2f', item.price.to_f) : '',
-          catalog.name,
+          item.brand,
+          label,
           catalog.catalog_type&.name,
           item.sheet_name,
           item.row_number,

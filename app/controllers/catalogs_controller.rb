@@ -1,6 +1,6 @@
 class CatalogsController < ApplicationController
   def index
-    catalogs = current_user.catalogs.includes(:catalog_type)
+    catalogs = current_user.catalogs.includes(:catalog_type, :supplier)
     render json: catalogs.map { |c| serialize_catalog(c) }
   end
 
@@ -43,6 +43,25 @@ class CatalogsController < ApplicationController
     render json: serialize_catalog(catalog), status: :created
   end
 
+  def update
+    catalog = current_user.catalogs.find(params[:id])
+    old_supplier_id = catalog.supplier_id
+    catalog.update!(catalog_update_params)
+
+    if old_supplier_id != catalog.supplier_id
+      pending_items = current_user.cart_items
+                                 .joins(catalog_item: { sheet_config: :catalog })
+                                 .where(catalogs: { id: catalog.id }, status: CartItem::STATUS_PENDING)
+
+      if catalog.supplier_id.present?
+        pending_items.update_all(supplier_id: catalog.supplier_id)
+      else
+        pending_items.destroy_all
+      end
+    end
+    render json: serialize_catalog(catalog)
+  end
+
   def destroy
     catalog = current_user.catalogs.find(params[:id])
     # Invalidate file cache before purging
@@ -55,12 +74,17 @@ class CatalogsController < ApplicationController
   private
 
   def catalog_params
-    params.permit(:name, :catalog_type_id, :file)
+    params.permit(:catalog_type_id, :supplier_id, :file)
+  end
+
+  def catalog_update_params
+    params.require(:catalog).permit(:supplier_id)
   end
 
   def serialize_catalog(catalog)
-    catalog.as_json(only: [:id, :name, :catalog_type_id, :created_at]).merge(
+    catalog.as_json(only: [:id, :catalog_type_id, :supplier_id, :created_at]).merge(
       catalog_type: catalog.catalog_type.as_json(only: [:id, :name]),
+      supplier: catalog.supplier&.as_json(only: [:id, :name, :phone, :email]),
       file_attached: catalog.file.attached?,
       file_name: catalog.file.attached? ? catalog.file.filename.to_s : nil
     )

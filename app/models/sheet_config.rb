@@ -17,5 +17,6 @@ class SheetConfig < ApplicationRecord
     self.code_columns = Array(code_columns).map { |v| v.to_s.strip.upcase }.reject(&:blank?)
     self.description_columns = Array(description_columns).map { |v| v.to_s.strip.upcase }.reject(&:blank?)
     self.price_columns = Array(price_columns).map { |v| v.to_s.strip.upcase }.reject(&:blank?)
+    self.brand_columns = Array(brand_columns).map { |v| v.to_s.strip.upcase }.reject(&:blank?)
   end
 end

@@ -1,3 +1,5 @@
+require 'set'
+
 class CatalogIndexer
   def initialize(sheet_config)
     @sheet_config = sheet_config
@@ -10,13 +12,16 @@ class CatalogIndexer
     code_cols = Array(@sheet_config.code_columns)
     desc_cols = Array(@sheet_config.description_columns)
     price_cols = Array(@sheet_config.price_columns)
+    brand_cols = Array(@sheet_config.brand_columns)
 
     return { success: false, error: "No code columns configured" } if code_cols.empty?
 
     # Delete existing items for this sheet_config before re-indexing
     @sheet_config.catalog_items.delete_all
 
-    items_created = 0
+    # Track unique items per indexing run to avoid creating duplicates when
+    # the Excel contains identical rows (same code, description, price, brand).
+    seen_items = Set.new
 
     # Use cached file to avoid re-downloading from S3 on every config update
     cached_path = FileCache.fetch(@catalog.file.blob)
@@ -33,7 +38,7 @@ class CatalogIndexer
     sheet = workbook.sheet(actual_sheet_name)
     last_row = sheet.last_row
 
-    return { success: true, items_created: 0 } if last_row.nil?
+    return { success: true } if last_row.nil?
 
     consecutive_empty_rows = 0
     max_empty_rows = 50  # Stop after 50 consecutive empty rows
@@ -43,9 +48,10 @@ class CatalogIndexer
       codes = extract_cells(sheet, row_number, code_cols)
       descriptions = extract_cells(sheet, row_number, desc_cols)
       prices = extract_cells(sheet, row_number, price_cols, kind: :price)
+      brands = extract_cells(sheet, row_number, brand_cols)
 
-      # Check if row is completely empty (no code, no desc, no price)
-      row_empty = codes.all?(&:blank?) && descriptions.all?(&:blank?) && prices.all?(&:blank?)
+      # Check if row is completely empty (no code, no desc, no price, no brand)
+      row_empty = codes.all?(&:blank?) && descriptions.all?(&:blank?) && prices.all?(&:blank?) && brands.all?(&:blank?)
 
       if row_empty
         consecutive_empty_rows += 1
@@ -61,17 +67,31 @@ class CatalogIndexer
       # Skip header-like rows (heuristic: code looks like a header word)
       next if looks_like_header?(codes.first)
 
-      # If code_cols and price_cols have same length, pair them by index
-      # Otherwise, use all prices for each code
+      # If code_cols and price_cols have same length, pair them by index.
+      # If there is a single price value in the row, reuse it for all codes.
+      # Otherwise (multiple prices, different number of columns), fall back to
+      # the first price found.
       paired = code_cols.size == price_cols.size && code_cols.size > 0
+
+      single_row_price = nil
+      if prices.size == 1
+        single_row_price = parse_price(prices.first)
+      end
 
       codes.each_with_index do |code_value, idx|
         next if code_value.blank?
 
         description = descriptions.join(" | ").presence
+        brand = brands.join(" | ").presence
+
         price = if paired && prices[idx].present?
+          # One price column per code column – use the price that shares index.
           parse_price(prices[idx])
+        elsif single_row_price
+          # Exactly one price value in the row – reuse it for all codes.
+          single_row_price
         elsif prices.any?
+          # Multiple prices but different number of columns – best effort: first price.
           parse_price(prices.first)
         else
           nil
@@ -80,18 +100,25 @@ class CatalogIndexer
         # Skip if no price (price is required, description is optional)
         next if price.nil?
 
+        # Deduplicate exact duplicates within this sheet_config: if another row
+        # already produced the same combination of code, description, price and
+        # brand in this indexing run, skip creating it again.
+        dedup_key = [code_value, description, price.to_s, brand]
+        next if seen_items.include?(dedup_key)
+        seen_items << dedup_key
+
         @sheet_config.catalog_items.create!(
           sheet_name: @sheet_config.sheet_name,
           row_number: row_number,
           code: code_value,
           description: description,
-          price: price
+          price: price,
+          brand: brand
         )
-        items_created += 1
       end
     end
 
-    { success: true, items_created: items_created }
+    { success: true }
   rescue StandardError => e
     Rails.logger.error("[CatalogIndexer] Error indexing sheet_config_id=#{@sheet_config.id}: #{e.class} - #{e.message}")
     { success: false, error: e.message }

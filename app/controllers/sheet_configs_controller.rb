@@ -35,11 +35,12 @@ class SheetConfigsController < ApplicationController
       :sheet_name,
       code_columns: [],
       description_columns: [],
-      price_columns: []
+      price_columns: [],
+      brand_columns: []
     )
   end
 
   def serialize_sheet_config(sheet_config)
-    sheet_config.as_json(only: [:id, :catalog_id, :sheet_name, :code_columns, :description_columns, :price_columns, :created_at])
+    sheet_config.as_json(only: [:id, :catalog_id, :sheet_name, :code_columns, :description_columns, :price_columns, :brand_columns, :created_at])
   end
 end

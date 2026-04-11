@@ -1,7 +1,7 @@
 class CartItemsController < ApplicationController
   def index
     items = current_user.cart_items
-                        .includes(:supplier, catalog_item: { sheet_config: { catalog: :catalog_type } })
+                        .includes(:supplier, catalog_item: { sheet_config: { catalog: :supplier } })
                         .order(:supplier_id, :created_at)
 
     render json: items.map { |ci| serialize_cart_item(ci) }
@@ -12,7 +12,7 @@ class CartItemsController < ApplicationController
     status_param = "pending" if status_param.blank?
 
     items = current_user.cart_items
-                        .includes(:supplier, catalog_item: { sheet_config: { catalog: :catalog_type } })
+                        .includes(:supplier, catalog_item: { sheet_config: { catalog: :supplier } })
 
     if status_param == "all"
       items = items
@@ -31,7 +31,7 @@ class CartItemsController < ApplicationController
     workbook = package.workbook
 
     workbook.add_worksheet(name: "Lista de compras") do |sheet|
-      sheet.add_row ["Proveedor", "Código", "Descripción", "Marca", "Precio", "Cantidad", "Ordenado el", "Catálogo", "Tipo", "Hoja", "Fila"]
+      sheet.add_row ["Proveedor", "Código", "Descripción", "Marca", "Precio", "Cantidad", "Ordenado el", "Catálogo", "Hoja", "Fila"]
 
       items.each do |ci|
         item = ci.catalog_item
@@ -49,7 +49,6 @@ class CartItemsController < ApplicationController
           ci.quantity,
           ci.ordered_at&.in_time_zone&.strftime('%Y-%m-%d %H:%M:%S'),
           label,
-          catalog&.catalog_type&.name,
           item&.sheet_name,
           item&.row_number,
         ]
@@ -115,7 +114,7 @@ class CartItemsController < ApplicationController
     end
 
     items = current_user.cart_items
-                        .includes(:supplier, catalog_item: { sheet_config: { catalog: :catalog_type } })
+                        .includes(:supplier, catalog_item: { sheet_config: { catalog: :supplier } })
                         .where(id: created_or_updated.map(&:id))
                         .order(:supplier_id, :created_at)
 
@@ -187,7 +186,6 @@ class CartItemsController < ApplicationController
         sheet_name: catalog_item.sheet_name,
         row_number: catalog_item.row_number,
         catalog_id: catalog&.id,
-        catalog_type: catalog&.catalog_type&.as_json(only: [:id, :name]),
         file_name: catalog&.file&.attached? ? catalog.file.filename.to_s : nil,
       },
       created_at: cart_item.created_at

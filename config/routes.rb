@@ -9,17 +9,23 @@ Rails.application.routes.draw do
 
   get "me", to: "me#show"
 
-  resources :catalog_types, only: [:index]
-
   resources :suppliers, only: [:index, :show, :create, :update, :destroy]
 
   resources :catalogs, only: [:index, :show, :create, :update, :destroy] do
+    collection do
+      post :bulk_create
+    end
+    member do
+      get :download
+    end
     resources :sheet_configs, only: [:index, :create, :update, :destroy]
   end
 
   resources :cart_items, only: [:index, :create, :update, :destroy]
 
   get "cart_items/export", to: "cart_items#export"
+
+  resources :bulk_uploads, only: [:show]
 
   get "search", to: "search#index"
   get "search/export", to: "search#export"

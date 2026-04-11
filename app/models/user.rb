@@ -4,6 +4,7 @@ class User < ApplicationRecord
   has_many :catalogs, dependent: :destroy
   has_many :suppliers, dependent: :destroy
   has_many :cart_items, dependent: :destroy
+  has_many :bulk_uploads, dependent: :destroy
 
   validates :name, presence: true
   validates :email, presence: true, uniqueness: { case_sensitive: false }

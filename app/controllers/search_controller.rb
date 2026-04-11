@@ -41,7 +41,7 @@ class SearchController < ApplicationController
     # Order by price ascending (nulls last), then by sheet/row
     items = items.order(Arel.sql("COALESCE(price, 999999999) ASC"), :sheet_config_id, :sheet_name, :row_number)
                  .limit(limit)
-                 .includes(sheet_config: { catalog: [:catalog_type, :supplier] })
+                 .includes(sheet_config: { catalog: [:supplier] })
 
     results = items.map do |item|
       catalog = item.sheet_config.catalog
@@ -52,7 +52,6 @@ class SearchController < ApplicationController
         catalog_item_id: item.id,
         catalog_id: catalog.id,
         catalog_name: label,
-        catalog_type: catalog.catalog_type&.name,
         sheet_config_id: item.sheet_config_id,
         sheet_name: item.sheet_name,
         row_number: item.row_number,
@@ -105,14 +104,14 @@ class SearchController < ApplicationController
 
     items = items.order(Arel.sql("COALESCE(price, 999999999) ASC"), :sheet_config_id, :sheet_name, :row_number)
                  .limit(limit)
-                 .includes(sheet_config: { catalog: [:catalog_type, :supplier] })
+                 .includes(sheet_config: { catalog: [:supplier] })
 
     package = Axlsx::Package.new
     workbook = package.workbook
 
     workbook.add_worksheet(name: "Resultados") do |sheet|
       # Header row
-      sheet.add_row ["Código", "Descripción", "Precio", "Marca", "Catálogo", "Tipo", "Hoja", "Fila", "Archivo Original"]
+      sheet.add_row ["Código", "Descripción", "Precio", "Marca", "Catálogo", "Hoja", "Fila", "Archivo Original"]
 
       # Data rows
       items.each do |item|
@@ -126,7 +125,6 @@ class SearchController < ApplicationController
           item.price.present? ? format('%.2f', item.price.to_f) : '',
           item.brand,
           label,
-          catalog.catalog_type&.name,
           item.sheet_name,
           item.row_number,
           original_filename

@@ -39,6 +39,21 @@ class FileCache
       expired_count
     end
 
+    def clear_all
+      return 0 unless Dir.exist?(CACHE_DIR)
+
+      cleared_count = 0
+      Dir.glob(CACHE_DIR.join("*")).each do |file|
+        next unless File.file?(file)
+
+        File.delete(file)
+        cleared_count += 1
+      end
+
+      Rails.logger.info("[FileCache] cleared_all #{cleared_count} files") if cleared_count > 0
+      cleared_count
+    end
+
     private
 
     def ensure_cache_dir

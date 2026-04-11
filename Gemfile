@@ -28,9 +28,14 @@ gem "bcrypt", "~> 3.1.7"
 gem "jwt", "~> 2.8"
 
 gem "roo", "~> 2.10"
+gem "roo-xls", "~> 1.2"
 gem "caxlsx", "~> 4.1"
+gem "ruby-openai"
+gem "pdf-reader"
 
 gem "aws-sdk-s3", "~> 1.0", require: false
+
+gem "kaminari", "~> 1.2"
 
 # Windows does not include zoneinfo files, so bundle the tzinfo-data gem
 gem "tzinfo-data", platforms: %i[ windows jruby ]
@@ -54,4 +59,3 @@ group :development do
   # Speed up commands on slow machines / big apps [https://github.com/rails/spring]
   # gem "spring"
 end
-

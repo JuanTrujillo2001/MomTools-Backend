@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_01_15_000010) do
+ActiveRecord::Schema[7.1].define(version: 2026_04_04_162633) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_trgm"
   enable_extension "plpgsql"
@@ -43,6 +43,18 @@ ActiveRecord::Schema[7.1].define(version: 2026_01_15_000010) do
     t.index ["blob_id", "variation_digest"], name: "index_active_storage_variant_records_uniqueness", unique: true
   end
 
+  create_table "bulk_uploads", force: :cascade do |t|
+    t.bigint "user_id", null: false
+    t.string "status", default: "pending", null: false
+    t.integer "total", default: 0, null: false
+    t.integer "processed", default: 0, null: false
+    t.jsonb "results", default: [], null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["status"], name: "index_bulk_uploads_on_status"
+    t.index ["user_id"], name: "index_bulk_uploads_on_user_id"
+  end
+
   create_table "cart_items", force: :cascade do |t|
     t.bigint "user_id", null: false
     t.bigint "supplier_id", null: false
@@ -72,21 +84,11 @@ ActiveRecord::Schema[7.1].define(version: 2026_01_15_000010) do
     t.index ["sheet_config_id"], name: "index_catalog_items_on_sheet_config_id"
   end
 
-  create_table "catalog_types", force: :cascade do |t|
-    t.string "name", null: false
-    t.string "description"
-    t.datetime "created_at", null: false
-    t.datetime "updated_at", null: false
-    t.index ["name"], name: "index_catalog_types_on_name", unique: true
-  end
-
   create_table "catalogs", force: :cascade do |t|
     t.bigint "user_id", null: false
-    t.bigint "catalog_type_id", null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.bigint "supplier_id"
-    t.index ["catalog_type_id"], name: "index_catalogs_on_catalog_type_id"
     t.index ["supplier_id"], name: "index_catalogs_on_supplier_id"
     t.index ["user_id"], name: "index_catalogs_on_user_id"
   end
@@ -125,11 +127,11 @@ ActiveRecord::Schema[7.1].define(version: 2026_01_15_000010) do
 
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
   add_foreign_key "active_storage_variant_records", "active_storage_blobs", column: "blob_id"
+  add_foreign_key "bulk_uploads", "users"
   add_foreign_key "cart_items", "catalog_items"
   add_foreign_key "cart_items", "suppliers"
   add_foreign_key "cart_items", "users"
   add_foreign_key "catalog_items", "sheet_configs", on_delete: :cascade
-  add_foreign_key "catalogs", "catalog_types"
   add_foreign_key "catalogs", "suppliers"
   add_foreign_key "catalogs", "users"
   add_foreign_key "sheet_configs", "catalogs", on_delete: :cascade

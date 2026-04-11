@@ -23,9 +23,48 @@ class CatalogIndexer
     # the Excel contains identical rows (same code, description, price, brand).
     seen_items = Set.new
 
-    # Use cached file to avoid re-downloading from S3 on every config update
-    cached_path = FileCache.fetch(@catalog.file.blob)
-    workbook = Roo::Spreadsheet.open(cached_path.to_s)
+    # Prefer the generated Excel file (stored in S3) if present
+    if @catalog.excel_file.attached?
+      source_path = FileCache.fetch(@catalog.excel_file.blob).to_s
+    else
+      cached_path = FileCache.fetch(@catalog.file.blob)
+      file_ext = File.extname(cached_path.to_s).downcase
+
+      source_path = if file_ext == ".pdf"
+        original_filename = @catalog.file.filename.to_s
+        excel_filename = "#{File.basename(original_filename, File.extname(original_filename))}.xlsx"
+        output_path = Rails.root.join("tmp", excel_filename).to_s
+        generated_xlsx_path = PdfToExcelService.new(cached_path.to_s, output_path: output_path).call
+
+        pdf_key = @catalog.file.blob.key.to_s
+        excel_key = pdf_key.sub(/\.pdf\z/i, ".xlsx")
+        excel_key = "#{pdf_key}.xlsx" if excel_key == pdf_key
+
+        File.open(generated_xlsx_path, "rb") do |f|
+          @catalog.excel_file.attach(
+            io: f,
+            filename: excel_filename,
+            content_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key: excel_key
+          )
+        end
+
+        FileCache.fetch(@catalog.excel_file.blob).to_s
+      else
+        cached_path.to_s
+      end
+    end
+
+    original_ext = File.extname(@catalog.file.filename.to_s).downcase.strip
+    
+    # Always pass extension explicitly to Roo
+    ext_sym = original_ext.gsub('.', '').to_sym if original_ext.present?
+    
+    workbook = if ext_sym.present?
+      Roo::Spreadsheet.open(source_path.to_s, extension: ext_sym)
+    else
+      Roo::Spreadsheet.open(source_path.to_s)
+    end
 
     # Find actual sheet name (handle whitespace normalization)
     sheet_name_normalized = normalize_sheet_name(@sheet_config.sheet_name)

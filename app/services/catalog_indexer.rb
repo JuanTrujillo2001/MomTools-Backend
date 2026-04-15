@@ -117,11 +117,57 @@ class CatalogIndexer
         single_row_price = parse_price(prices.first)
       end
 
+      parsed_prices = prices.map { |p| parse_price(p) }.compact
+
       codes.each_with_index do |code_value, idx|
         next if code_value.blank?
 
         description = descriptions.join(" | ").presence
         brand = brands.join(" | ").presence
+
+        # Special case:
+        # - One code column
+        # - Multiple price columns
+        # => create one item per price value (same code/row_number)
+        if codes.size == 1 && !paired && parsed_prices.size > 1
+          parsed_prices.each do |price|
+            dedup_key = [code_value, description, price.to_s, brand]
+            next if seen_items.include?(dedup_key)
+            seen_items << dedup_key
+
+            @sheet_config.catalog_items.create!(
+              sheet_name: @sheet_config.sheet_name,
+              row_number: row_number,
+              code: code_value,
+              description: description,
+              price: price,
+              brand: brand
+            )
+          end
+          next
+        end
+
+        # Special case:
+        # - Multiple codes
+        # - Multiple price columns (not paired)
+        # => create one item per (code, price) combination in the row
+        if codes.size > 1 && !paired && parsed_prices.size > 1
+          parsed_prices.each do |price|
+            dedup_key = [code_value, description, price.to_s, brand]
+            next if seen_items.include?(dedup_key)
+            seen_items << dedup_key
+
+            @sheet_config.catalog_items.create!(
+              sheet_name: @sheet_config.sheet_name,
+              row_number: row_number,
+              code: code_value,
+              description: description,
+              price: price,
+              brand: brand
+            )
+          end
+          next
+        end
 
         price = if paired && prices[idx].present?
           # One price column per code column – use the price that shares index.
@@ -129,9 +175,9 @@ class CatalogIndexer
         elsif single_row_price
           # Exactly one price value in the row – reuse it for all codes.
           single_row_price
-        elsif prices.any?
-          # Multiple prices but different number of columns – best effort: first price.
-          parse_price(prices.first)
+        elsif parsed_prices.any?
+          # Multiple prices but different number of columns – best effort: first parsed price.
+          parsed_prices.first
         else
           nil
         end
@@ -223,7 +269,9 @@ class CatalogIndexer
       end
     end
 
-    BigDecimal(s)
+    price = BigDecimal(s)
+    return nil if price <= 0
+    price
   rescue ArgumentError, TypeError
     nil
   end

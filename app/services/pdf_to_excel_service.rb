@@ -4,6 +4,8 @@ require 'json'
 
 class PdfToExcelService
   PAGES_PER_CHUNK = 2
+  MAX_RETRIES_PER_CHUNK = 3
+  RETRY_BASE_DELAY_SECONDS = 2
 
   def initialize(file_path, output_path: nil)
     @file_path = file_path
@@ -24,11 +26,33 @@ class PdfToExcelService
     pages = reader.pages
     items = []
 
-    pages.each_slice(PAGES_PER_CHUNK).with_index do |page_group, idx|
+    pages_per_chunk = if pages.size >= 100
+      6
+    elsif pages.size >= 50
+      4
+    else
+      PAGES_PER_CHUNK
+    end
+
+    total_chunks = (pages.size.to_f / pages_per_chunk).ceil
+
+    pages.each_slice(pages_per_chunk).with_index do |page_group, idx|
       chunk_text = page_group.map(&:text).join("\n")
-      json = call_gpt(chunk_text, chunk_index: idx + 1, total_chunks: (pages.size.to_f / PAGES_PER_CHUNK).ceil)
-      parsed = parse_json(json)
-      items.concat(Array(parsed))
+
+      attempt = 0
+      begin
+        json = call_gpt(chunk_text, chunk_index: idx + 1, total_chunks: total_chunks)
+        parsed = parse_json(json)
+        items.concat(Array(parsed))
+      rescue Faraday::TimeoutError, Faraday::ConnectionFailed, Net::ReadTimeout, Net::OpenTimeout => e
+        attempt += 1
+        raise if attempt > MAX_RETRIES_PER_CHUNK
+
+        sleep_seconds = RETRY_BASE_DELAY_SECONDS**attempt
+        Rails.logger.warn("[PdfToExcelService] retry chunk=#{idx + 1}/#{total_chunks} attempt=#{attempt} error=#{e.class} msg=#{e.message} sleep=#{sleep_seconds}s")
+        sleep(sleep_seconds)
+        retry
+      end
     end
 
     items

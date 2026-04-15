@@ -6,6 +6,8 @@ class PdfToExcelService
   PAGES_PER_CHUNK = 2
   MAX_RETRIES_PER_CHUNK = 3
   RETRY_BASE_DELAY_SECONDS = 2
+  DEFAULT_REQUEST_TIMEOUT = 300
+  DEFAULT_OPEN_TIMEOUT = 30
 
   def initialize(file_path, output_path: nil)
     @file_path = file_path
@@ -44,12 +46,13 @@ class PdfToExcelService
         json = call_gpt(chunk_text, chunk_index: idx + 1, total_chunks: total_chunks)
         parsed = parse_json(json)
         items.concat(Array(parsed))
-      rescue Faraday::TimeoutError, Faraday::ConnectionFailed, Net::ReadTimeout, Net::OpenTimeout => e
+      rescue Faraday::TimeoutError, Faraday::ConnectionFailed, Net::ReadTimeout, Net::OpenTimeout, Faraday::ServerError, Faraday::ClientError => e
         attempt += 1
         raise if attempt > MAX_RETRIES_PER_CHUNK
 
         sleep_seconds = RETRY_BASE_DELAY_SECONDS**attempt
-        Rails.logger.warn("[PdfToExcelService] retry chunk=#{idx + 1}/#{total_chunks} attempt=#{attempt} error=#{e.class} msg=#{e.message} sleep=#{sleep_seconds}s")
+        status = e.respond_to?(:response) ? e.response&.dig(:status) : nil
+        Rails.logger.warn("[PdfToExcelService] retry chunk=#{idx + 1}/#{total_chunks} attempt=#{attempt} status=#{status} error=#{e.class} msg=#{e.message} sleep=#{sleep_seconds}s")
         sleep(sleep_seconds)
         retry
       end
@@ -59,7 +62,7 @@ class PdfToExcelService
   end
 
   def call_gpt(texto, chunk_index: nil, total_chunks: nil)
-    client = OpenAI::Client.new
+    client = build_openai_client
 
     chunk_prefix = ""
     if chunk_index && total_chunks
@@ -124,6 +127,16 @@ class PdfToExcelService
     )
 
     response.dig("output", 0, "content", 0, "text")
+  end
+
+  def build_openai_client
+    request_timeout = ENV.fetch("OPENAI_REQUEST_TIMEOUT", DEFAULT_REQUEST_TIMEOUT.to_s).to_i
+    open_timeout = ENV.fetch("OPENAI_OPEN_TIMEOUT", DEFAULT_OPEN_TIMEOUT.to_s).to_i
+
+    OpenAI::Client.new do |f|
+      f.options.timeout = request_timeout
+      f.options.open_timeout = open_timeout
+    end
   end
 
   def parse_json(json)

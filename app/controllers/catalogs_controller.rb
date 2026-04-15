@@ -211,54 +211,36 @@ class CatalogsController < ApplicationController
   private
 
   def process_catalog_file!(catalog)
-    return unless catalog.file.attached?
+    catalog.save!
 
-    cached_path = FileCache.fetch(catalog.file.blob)
-    file_ext = File.extname(cached_path.to_s).downcase
-    source_path = if file_ext == ".pdf"
-      original_filename = catalog.file.filename.to_s
-      excel_filename = "#{File.basename(original_filename, File.extname(original_filename))}.xlsx"
-      output_path = Rails.root.join("tmp", excel_filename).to_s
+    if catalog.file.attached?
+      # Use cached file to avoid re-downloading
+      cached_path = FileCache.fetch(catalog.file.blob)
+      file_ext = File.extname(cached_path.to_s).downcase
+      if file_ext == ".pdf"
+        CatalogPdfToExcelJob.perform_later(catalog.id)
+      else
+        workbook = case file_ext
+        when ".xlsx"
+          Roo::Spreadsheet.open(cached_path.to_s, extension: :xlsx)
+        when ".xls"
+          Roo::Spreadsheet.open(cached_path.to_s, extension: :xls)
+        when ".csv"
+          Roo::Spreadsheet.open(cached_path.to_s, extension: :csv)
+        else
+          Roo::Spreadsheet.open(cached_path.to_s)
+        end
 
-      generated_xlsx_path = PdfToExcelService.new(cached_path.to_s, output_path: output_path).call
+        workbook.sheets.each do |sheet_name|
+          normalized_sheet_name = sheet_name.to_s.strip.gsub(/\s+/, ' ')
+          next if normalized_sheet_name.blank?
 
-      pdf_key = catalog.file.blob.key.to_s
-      excel_key = pdf_key.sub(/\.pdf\z/i, ".xlsx")
-      excel_key = "#{pdf_key}.xlsx" if excel_key == pdf_key
-
-      File.open(generated_xlsx_path, "rb") do |f|
-        catalog.excel_file.attach(
-          io: f,
-          filename: excel_filename,
-          content_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          key: excel_key
-        )
-      end
-
-      FileCache.fetch(catalog.excel_file.blob).to_s
-    else
-      cached_path.to_s
-    end
-
-    original_ext = File.extname(catalog.file.filename.to_s).downcase.strip
-    
-    # Always pass extension explicitly to Roo
-    ext_sym = original_ext.gsub('.', '').to_sym if original_ext.present?
-    
-    workbook = if ext_sym.present?
-      Roo::Spreadsheet.open(source_path.to_s, extension: ext_sym)
-    else
-      Roo::Spreadsheet.open(source_path.to_s)
-    end
-
-    workbook.sheets.each do |sheet_name|
-      normalized_sheet_name = sheet_name.to_s.strip.gsub(/\s+/, ' ')
-      next if normalized_sheet_name.blank?
-
-      SheetConfig.find_or_create_by!(catalog: catalog, sheet_name: normalized_sheet_name) do |sc|
-        sc.code_columns = []
-        sc.description_columns = []
-        sc.price_columns = []
+          SheetConfig.find_or_create_by!(catalog: catalog, sheet_name: normalized_sheet_name) do |sc|
+            sc.code_columns = []
+            sc.description_columns = []
+            sc.price_columns = []
+          end
+        end
       end
     end
   end

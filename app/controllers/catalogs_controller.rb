@@ -1,4 +1,7 @@
 class CatalogsController < ApplicationController
+  MAX_PDF_TO_EXCEL_PAGES = ENV.fetch("PDF_TO_EXCEL_MAX_PAGES", "200").to_i
+  MAX_PDF_TO_EXCEL_BYTES = ENV.fetch("PDF_TO_EXCEL_MAX_BYTES", "50000000").to_i
+
   def index
     page = params[:page].to_i
     page = 1 if page < 1
@@ -169,9 +172,21 @@ class CatalogsController < ApplicationController
     end
 
     if original_ext == ".pdf"
+      ensure_pdf_convertible!(cached_original_path.to_s, catalog.file.blob)
+
+      if catalog.pdf_to_excel_status == "failed"
+        return render json: { error: catalog.pdf_to_excel_error.presence || "PDF to Excel failed" }, status: :unprocessable_entity
+      end
+
       excel_blob = if catalog.excel_file.attached?
         catalog.excel_file.blob
       else
+        if catalog.pdf_to_excel_status != "processing"
+          CatalogPdfToExcelJob.perform_later(catalog.id)
+        end
+
+        return render json: { status: "processing" }, status: :accepted
+
         original_filename = catalog.file.filename.to_s
         excel_filename = "#{File.basename(original_filename, File.extname(original_filename))}.xlsx"
         output_path = Rails.root.join("tmp", excel_filename).to_s
@@ -218,6 +233,7 @@ class CatalogsController < ApplicationController
       cached_path = FileCache.fetch(catalog.file.blob)
       file_ext = File.extname(cached_path.to_s).downcase
       if file_ext == ".pdf"
+        ensure_pdf_convertible!(cached_path.to_s, catalog.file.blob)
         CatalogPdfToExcelJob.perform_later(catalog.id)
       else
         workbook = case file_ext
@@ -245,6 +261,23 @@ class CatalogsController < ApplicationController
     end
   end
 
+  def ensure_pdf_convertible!(pdf_path, blob)
+    return unless pdf_path.present?
+
+    if blob && blob.byte_size.to_i > MAX_PDF_TO_EXCEL_BYTES
+      raise ActionController::BadRequest, "PDF muy grande para convertir (max #{MAX_PDF_TO_EXCEL_BYTES} bytes)"
+    end
+
+    reader = PDF::Reader.new(pdf_path)
+    pages_count = reader.pages.size
+    if pages_count > MAX_PDF_TO_EXCEL_PAGES
+      raise ActionController::BadRequest, "PDF muy largo para convertir (#{pages_count} páginas, max #{MAX_PDF_TO_EXCEL_PAGES})"
+    end
+  rescue PDF::Reader::MalformedPDFError => e
+    Rails.logger.warn("[CatalogsController] Malformed PDF: #{e.class} - #{e.message}")
+    raise ActionController::BadRequest, "PDF inválido"
+  end
+
   def catalog_params
     params.permit(:supplier_id, :file)
   end
@@ -259,7 +292,11 @@ class CatalogsController < ApplicationController
       file_attached: catalog.file.attached?,
       file_name: catalog.file.attached? ? catalog.file.filename.to_s : nil,
       excel_file_attached: catalog.excel_file.attached?,
-      excel_file_name: catalog.excel_file.attached? ? catalog.excel_file.filename.to_s : nil
+      excel_file_name: catalog.excel_file.attached? ? catalog.excel_file.filename.to_s : nil,
+      pdf_to_excel_status: catalog.pdf_to_excel_status,
+      pdf_to_excel_error: catalog.pdf_to_excel_error,
+      pdf_to_excel_started_at: catalog.pdf_to_excel_started_at,
+      pdf_to_excel_finished_at: catalog.pdf_to_excel_finished_at
     )
   end
 
@@ -269,7 +306,11 @@ class CatalogsController < ApplicationController
       file_attached: catalog.file.attached?,
       file_name: catalog.file.attached? ? catalog.file.filename.to_s : nil,
       excel_file_attached: catalog.excel_file.attached?,
-      excel_file_name: catalog.excel_file.attached? ? catalog.excel_file.filename.to_s : nil
+      excel_file_name: catalog.excel_file.attached? ? catalog.excel_file.filename.to_s : nil,
+      pdf_to_excel_status: catalog.pdf_to_excel_status,
+      pdf_to_excel_error: catalog.pdf_to_excel_error,
+      pdf_to_excel_started_at: catalog.pdf_to_excel_started_at,
+      pdf_to_excel_finished_at: catalog.pdf_to_excel_finished_at
     )
   end
 end

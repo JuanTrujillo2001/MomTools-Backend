@@ -38,14 +38,25 @@ class PdfToExcelService
 
     total_chunks = (pages.size.to_f / pages_per_chunk).ceil
 
+    Rails.logger.info("[PdfToExcelService] start pages=#{pages.size} pages_per_chunk=#{pages_per_chunk} total_chunks=#{total_chunks}")
+
     pages.each_slice(pages_per_chunk).with_index do |page_group, idx|
+      chunk_number = idx + 1
+      from_page = (idx * pages_per_chunk) + 1
+      to_page = [from_page + page_group.size - 1, pages.size].min
+      chunk_started_at = Time.current
+
+      Rails.logger.info("[PdfToExcelService] chunk_start #{chunk_number}/#{total_chunks} pages=#{from_page}-#{to_page} page_count=#{page_group.size}")
       chunk_text = page_group.map(&:text).join("\n")
 
       attempt = 0
       begin
-        json = call_gpt(chunk_text, chunk_index: idx + 1, total_chunks: total_chunks)
+        json = call_gpt(chunk_text, chunk_index: chunk_number, total_chunks: total_chunks)
         parsed = parse_json(json)
-        items.concat(Array(parsed))
+        parsed_items = Array(parsed)
+        items.concat(parsed_items)
+        duration_s = (Time.current - chunk_started_at).to_f
+        Rails.logger.info("[PdfToExcelService] chunk_done #{chunk_number}/#{total_chunks} pages=#{from_page}-#{to_page} items=#{parsed_items.size} duration_s=#{format('%.2f', duration_s)}")
       rescue Faraday::TimeoutError, Faraday::ConnectionFailed, Net::ReadTimeout, Net::OpenTimeout, Faraday::ServerError, Faraday::ClientError => e
         attempt += 1
         raise if attempt > MAX_RETRIES_PER_CHUNK

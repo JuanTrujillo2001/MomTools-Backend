@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_04_04_162633) do
+ActiveRecord::Schema[7.1].define(version: 2026_04_25_143500) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_trgm"
   enable_extension "plpgsql"
@@ -89,6 +89,11 @@ ActiveRecord::Schema[7.1].define(version: 2026_04_04_162633) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.bigint "supplier_id"
+    t.string "pdf_to_excel_status"
+    t.text "pdf_to_excel_error"
+    t.datetime "pdf_to_excel_started_at"
+    t.datetime "pdf_to_excel_finished_at"
+    t.index ["pdf_to_excel_status"], name: "index_catalogs_on_pdf_to_excel_status"
     t.index ["supplier_id"], name: "index_catalogs_on_supplier_id"
     t.index ["user_id"], name: "index_catalogs_on_user_id"
   end

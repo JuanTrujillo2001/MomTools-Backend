@@ -1,6 +1,10 @@
 class BulkUploadCatalogsJob < ApplicationJob
   queue_as :default
 
+  PROVIDER_OPENAI = "openai"
+  PROVIDER_ADOBE = "adobe"
+  PROVIDER_AUTO = "auto"
+
   def perform(bulk_upload_id, items_data)
     bulk_upload = BulkUpload.find(bulk_upload_id)
     user = bulk_upload.user
@@ -10,6 +14,7 @@ class BulkUploadCatalogsJob < ApplicationJob
     results = []
 
     items_data.each_with_index do |item_data, idx|
+      catalog = nil
       begin
         supplier_id = item_data['supplier_id']
         file_info = item_data['file']
@@ -32,13 +37,25 @@ class BulkUploadCatalogsJob < ApplicationJob
 
         results << { index: idx, success: true, catalog_id: catalog.id }
       rescue => e
+        Rails.logger.error("[BulkUploadCatalogsJob] item_failed index=#{idx} catalog_id=#{catalog&.id} error=#{e.class} msg=#{e.message}")
+
+        begin
+          if catalog&.persisted?
+            catalog.file.purge if catalog.file.attached?
+            catalog.excel_file.purge if catalog.excel_file.attached?
+            catalog.destroy!
+          end
+        rescue StandardError => cleanup_error
+          Rails.logger.warn("[BulkUploadCatalogsJob] cleanup_failed index=#{idx} catalog_id=#{catalog&.id} error=#{cleanup_error.class} msg=#{cleanup_error.message}")
+        end
+
         results << { index: idx, success: false, error: e.message }
       end
 
       bulk_upload.update!(processed: idx + 1, results: results)
     end
 
-    final_status = results.all? { |r| r[:success] } ? 'completed' : 'completed'
+    final_status = results.all? { |r| r[:success] } ? 'completed' : 'failed'
     bulk_upload.update!(status: final_status)
   rescue => e
     bulk_upload.update!(status: 'failed', results: [{ error: e.message }]) if bulk_upload
@@ -60,7 +77,20 @@ class BulkUploadCatalogsJob < ApplicationJob
       excel_filename = "#{File.basename(original_filename, File.extname(original_filename))}.xlsx"
       output_path = Rails.root.join("tmp", excel_filename).to_s
 
-      generated_xlsx_path = PdfToExcelService.new(cached_path.to_s, output_path: output_path).call
+      provider_env = ENV.fetch("PDF_TO_EXCEL_PROVIDER", PROVIDER_OPENAI).to_s.strip.downcase
+      provider = provider_env
+      if provider_env == PROVIDER_AUTO
+        provider = PdfToExcelProviderSelector.new(cached_path.to_s).call
+        Rails.logger.info("[BulkUploadCatalogsJob] catalog_id=#{catalog.id} provider_env=#{provider_env} provider_selected=#{provider}")
+      else
+        Rails.logger.info("[BulkUploadCatalogsJob] catalog_id=#{catalog.id} provider_env=#{provider_env}")
+      end
+
+      generated_xlsx_path = if provider == PROVIDER_ADOBE
+        AdobePdfToExcelService.new(cached_path.to_s, output_path: output_path).call
+      else
+        PdfToExcelService.new(cached_path.to_s, output_path: output_path).call
+      end
 
       pdf_key = catalog.file.blob.key.to_s
       excel_key = pdf_key.sub(/\.pdf\z/i, ".xlsx")
@@ -80,15 +110,15 @@ class BulkUploadCatalogsJob < ApplicationJob
       cached_path.to_s
     end
 
-    original_ext = File.extname(catalog.file.filename.to_s).downcase.strip
-    
-    Rails.logger.info("[BulkUploadCatalogsJob] Processing file: #{catalog.file.filename}, extension: '#{original_ext}'")
-    
-    # Always pass extension explicitly to Roo
-    ext_sym = original_ext.gsub('.', '').to_sym if original_ext.present?
-    
-    Rails.logger.info("[BulkUploadCatalogsJob] Extension symbol: #{ext_sym.inspect}")
-    
+    source_ext = File.extname(source_path.to_s).downcase.strip
+
+    Rails.logger.info("[BulkUploadCatalogsJob] Processing file: #{catalog.file.filename}, source_extension: '#{source_ext}'")
+
+    # Always pass extension explicitly to Roo based on the actual file being opened
+    ext_sym = source_ext.gsub('.', '').to_sym if source_ext.present?
+
+    Rails.logger.info("[BulkUploadCatalogsJob] Roo extension symbol: #{ext_sym.inspect}")
+
     workbook = if ext_sym.present?
       Roo::Spreadsheet.open(source_path.to_s, extension: ext_sym)
     else

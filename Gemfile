@@ -33,8 +33,6 @@ gem "caxlsx", "~> 4.1"
 gem "ruby-openai"
 gem "pdf-reader"
 
-gem "sidekiq"
-
 gem "aws-sdk-s3", "~> 1.0", require: false
 
 gem "kaminari", "~> 1.2"

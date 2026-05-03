@@ -15,7 +15,11 @@ Rails.application.routes.draw do
     member do
       get :download
     end
-    resources :sheet_configs, only: [:index, :create, :update, :destroy]
+    resources :sheet_configs, only: [:index, :create, :update, :destroy] do
+      collection do
+        patch :bulk_update
+      end
+    end
   end
 
   resources :cart_items, only: [:index, :create, :update, :destroy]

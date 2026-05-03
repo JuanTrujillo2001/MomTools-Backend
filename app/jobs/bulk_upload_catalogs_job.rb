@@ -19,6 +19,8 @@ class BulkUploadCatalogsJob < ApplicationJob
         supplier_id = item_data['supplier_id']
         file_info = item_data['file']
 
+        replace_existing_catalog_by_filename!(user, file_info['filename'])
+
         catalog = user.catalogs.new(supplier_id: supplier_id)
         
         # Read file content into memory to avoid closed stream issues
@@ -37,12 +39,21 @@ class BulkUploadCatalogsJob < ApplicationJob
 
         results << { index: idx, success: true, catalog_id: catalog.id }
       rescue => e
-        Rails.logger.error("[BulkUploadCatalogsJob] item_failed index=#{idx} catalog_id=#{catalog&.id} error=#{e.class} msg=#{e.message}")
+        Rails.logger.error("[BulkUploadCatalogsJob] item_failed index=#{idx} catalog_id=#{catalog&.id} error=#{e.class} msg=#{e.message} backtrace=#{Array(e.backtrace).first(12).join(" | ")}")
 
         begin
           if catalog&.persisted?
-            catalog.file.purge if catalog.file.attached?
-            catalog.excel_file.purge if catalog.excel_file.attached?
+            begin
+              catalog.file.purge if catalog.file.attached?
+            rescue ActiveStorage::FileNotFoundError => purge_error
+              Rails.logger.warn("[BulkUploadCatalogsJob] purge_missing_file index=#{idx} catalog_id=#{catalog&.id} error=#{purge_error.class} msg=#{purge_error.message}")
+            end
+
+            begin
+              catalog.excel_file.purge if catalog.excel_file.attached?
+            rescue ActiveStorage::FileNotFoundError => purge_error
+              Rails.logger.warn("[BulkUploadCatalogsJob] purge_missing_excel index=#{idx} catalog_id=#{catalog&.id} error=#{purge_error.class} msg=#{purge_error.message}")
+            end
             catalog.destroy!
           end
         rescue StandardError => cleanup_error
@@ -66,6 +77,47 @@ class BulkUploadCatalogsJob < ApplicationJob
   end
 
   private
+
+  def replace_existing_catalog_by_filename!(user, filename)
+    normalized = filename.to_s.strip
+    return if normalized.blank?
+
+    existing = user.catalogs
+                   .left_joins(file_attachment: :blob)
+                   .where('LOWER(active_storage_blobs.filename) = ?', normalized.downcase)
+                   .order(created_at: :desc)
+                   .first
+
+    return unless existing
+
+    Rails.logger.info("[BulkUploadCatalogsJob] replacing_existing_catalog user_id=#{user.id} old_catalog_id=#{existing.id} filename=#{normalized}")
+
+    original_blob = existing.file.attached? ? existing.file.blob : nil
+    excel_blob = existing.excel_file.attached? ? existing.excel_file.blob : nil
+
+    ActiveRecord::Base.transaction do
+      user.cart_items
+          .joins(catalog_item: { sheet_config: :catalog })
+          .where(catalogs: { id: existing.id })
+          .delete_all
+
+      existing.destroy!
+    end
+
+    FileCache.invalidate(original_blob) if original_blob
+    FileCache.invalidate(excel_blob) if excel_blob
+    begin
+      original_blob&.purge
+    rescue ActiveStorage::FileNotFoundError => purge_error
+      Rails.logger.warn("[BulkUploadCatalogsJob] purge_missing_old_file user_id=#{user.id} old_catalog_id=#{existing.id} error=#{purge_error.class} msg=#{purge_error.message}")
+    end
+
+    begin
+      excel_blob&.purge
+    rescue ActiveStorage::FileNotFoundError => purge_error
+      Rails.logger.warn("[BulkUploadCatalogsJob] purge_missing_old_excel user_id=#{user.id} old_catalog_id=#{existing.id} error=#{purge_error.class} msg=#{purge_error.message}")
+    end
+  end
 
   def process_catalog_file!(catalog)
     return unless catalog.file.attached?

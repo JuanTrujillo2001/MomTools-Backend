@@ -12,9 +12,6 @@ Rails.application.routes.draw do
   resources :suppliers, only: [:index, :show, :create, :update, :destroy]
 
   resources :catalogs, only: [:index, :show, :create, :update, :destroy] do
-    collection do
-      post :bulk_create
-    end
     member do
       get :download
     end

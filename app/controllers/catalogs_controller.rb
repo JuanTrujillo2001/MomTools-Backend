@@ -8,13 +8,22 @@ class CatalogsController < ApplicationController
     per_page = params[:per_page].to_i
     per_page = 20 if per_page < 1 || per_page > 100
 
+    supplier_id = params[:supplier_id].presence
+    q = params[:q].to_s.strip
+
     catalogs = current_user.catalogs
                           .left_joins(:supplier)
+                          .left_joins(file_attachment: :blob)
                           .select('catalogs.*, suppliers.name as supplier_name')
                           .includes(file_attachment: :blob, excel_file_attachment: :blob)
                           .order(created_at: :desc)
-                          .page(page)
-                          .per(per_page)
+
+    catalogs = catalogs.where(supplier_id: supplier_id) if supplier_id.present?
+    if q.present?
+      catalogs = catalogs.where('active_storage_blobs.filename ILIKE ?', "%#{q}%")
+    end
+
+    catalogs = catalogs.page(page).per(per_page)
 
     render json: {
       catalogs: catalogs.map { |c| serialize_catalog_light(c) },
@@ -34,35 +43,10 @@ class CatalogsController < ApplicationController
   end
 
   def create
-    catalog = current_user.catalogs.new(catalog_params)
-
-    if params[:file].present?
-      catalog.file.attach(
-        io: params[:file].tempfile,
-        filename: params[:file].original_filename,
-        content_type: params[:file].content_type,
-        key: "catalogs/#{current_user.id}/#{SecureRandom.uuid}_#{params[:file].original_filename}"
-      )
-    end
-
-    catalog.save!
-
-    process_catalog_file!(catalog)
-
-    render json: serialize_catalog(catalog), status: :created
-  end
-
-  def bulk_create
-    items_param = params[:items]
-    items = if items_param.is_a?(ActionController::Parameters) || items_param.is_a?(Hash)
-      raw = items_param.is_a?(ActionController::Parameters) ? items_param.to_unsafe_h : items_param
-      raw.sort_by { |k, _| k.to_i }.map { |_, v| v }
-    else
-      Array(items_param)
-    end
+    items = normalize_bulk_items
 
     if items.empty?
-      return render json: { error: 'items is required' }, status: :bad_request
+      return render json: { error: 'items or file is required' }, status: :bad_request
     end
 
     # Create BulkUpload record
@@ -186,27 +170,6 @@ class CatalogsController < ApplicationController
         end
 
         return render json: { status: "processing" }, status: :accepted
-
-        original_filename = catalog.file.filename.to_s
-        excel_filename = "#{File.basename(original_filename, File.extname(original_filename))}.xlsx"
-        output_path = Rails.root.join("tmp", excel_filename).to_s
-
-        generated_xlsx_path = PdfToExcelService.new(cached_original_path.to_s, output_path: output_path).call
-
-        pdf_key = catalog.file.blob.key.to_s
-        excel_key = pdf_key.sub(/\.pdf\z/i, ".xlsx")
-        excel_key = "#{pdf_key}.xlsx" if excel_key == pdf_key
-
-        File.open(generated_xlsx_path, "rb") do |f|
-          catalog.excel_file.attach(
-            io: f,
-            filename: excel_filename,
-            content_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key: excel_key
-          )
-        end
-
-        catalog.excel_file.blob
       end
 
       excel_cached_path = FileCache.fetch(excel_blob)
@@ -225,40 +188,22 @@ class CatalogsController < ApplicationController
 
   private
 
-  def process_catalog_file!(catalog)
-    catalog.save!
-
-    if catalog.file.attached?
-      # Use cached file to avoid re-downloading
-      cached_path = FileCache.fetch(catalog.file.blob)
-      file_ext = File.extname(cached_path.to_s).downcase
-      if file_ext == ".pdf"
-        ensure_pdf_convertible!(cached_path.to_s, catalog.file.blob)
-        CatalogPdfToExcelJob.perform_later(catalog.id)
-      else
-        workbook = case file_ext
-        when ".xlsx"
-          Roo::Spreadsheet.open(cached_path.to_s, extension: :xlsx)
-        when ".xls"
-          Roo::Spreadsheet.open(cached_path.to_s, extension: :xls)
-        when ".csv"
-          Roo::Spreadsheet.open(cached_path.to_s, extension: :csv)
-        else
-          Roo::Spreadsheet.open(cached_path.to_s)
-        end
-
-        workbook.sheets.each do |sheet_name|
-          normalized_sheet_name = sheet_name.to_s.strip.gsub(/\s+/, ' ')
-          next if normalized_sheet_name.blank?
-
-          SheetConfig.find_or_create_by!(catalog: catalog, sheet_name: normalized_sheet_name) do |sc|
-            sc.code_columns = []
-            sc.description_columns = []
-            sc.price_columns = []
-          end
-        end
-      end
+  def normalize_bulk_items
+    items_param = params[:items]
+    items = if items_param.is_a?(ActionController::Parameters) || items_param.is_a?(Hash)
+      raw = items_param.is_a?(ActionController::Parameters) ? items_param.to_unsafe_h : items_param
+      raw.sort_by { |k, _| k.to_i }.map { |_, v| v }
+    elsif items_param.present?
+      Array(items_param)
+    else
+      []
     end
+
+    if items.empty? && params[:file].present?
+      items = [{ supplier_id: params[:supplier_id], file: params[:file] }]
+    end
+
+    items
   end
 
   def ensure_pdf_convertible!(pdf_path, blob)
@@ -276,10 +221,6 @@ class CatalogsController < ApplicationController
   rescue PDF::Reader::MalformedPDFError => e
     Rails.logger.warn("[CatalogsController] Malformed PDF: #{e.class} - #{e.message}")
     raise ActionController::BadRequest, "PDF inválido"
-  end
-
-  def catalog_params
-    params.permit(:supplier_id, :file)
   end
 
   def catalog_update_params

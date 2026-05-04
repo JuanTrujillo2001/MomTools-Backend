@@ -37,6 +37,8 @@ class BulkUploadCatalogsJob < ApplicationJob
         catalog.save!
         process_catalog_file!(catalog)
 
+        SheetConfigAutoConfigureJob.perform_later(catalog.id)
+
         results << { index: idx, success: true, catalog_id: catalog.id }
       rescue => e
         Rails.logger.error("[BulkUploadCatalogsJob] item_failed index=#{idx} catalog_id=#{catalog&.id} error=#{e.class} msg=#{e.message} backtrace=#{Array(e.backtrace).first(12).join(" | ")}")

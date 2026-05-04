@@ -16,37 +16,19 @@ class CatalogIndexer
 
     return { success: false, error: "No code columns configured" } if code_cols.empty?
 
-    # Delete existing items for this sheet_config before re-indexing
     @sheet_config.catalog_items.delete_all
 
-    # Track unique items per indexing run to avoid creating duplicates when
-    # the Excel contains identical rows (same code, description, price, brand).
     seen_items = Set.new
 
-    # Prefer the generated Excel file (stored in S3) if present
-    if @catalog.excel_file.attached?
-      source_path = FileCache.fetch(@catalog.excel_file.blob).to_s
-    else
-      cached_path = FileCache.fetch(@catalog.file.blob)
-      file_ext = File.extname(cached_path.to_s).downcase
+    source_path, ext_sym = resolve_source_path
+    return { success: false, error: "Catalog is still processing" } if ext_sym.nil?
 
-      return { success: false, error: "Catalog is still processing" } if file_ext == ".pdf"
+    Rails.logger.info("[CatalogIndexer] opening source_path=#{source_path} ext_sym=#{ext_sym}")
 
-      source_path = cached_path.to_s
-    end
+    workbook = ext_sym.present? \
+      ? Roo::Spreadsheet.open(source_path, extension: ext_sym) \
+      : Roo::Spreadsheet.open(source_path)
 
-    original_ext = File.extname(@catalog.file.filename.to_s).downcase.strip
-    
-    # Always pass extension explicitly to Roo
-    ext_sym = original_ext.gsub('.', '').to_sym if original_ext.present?
-    
-    workbook = if ext_sym.present?
-      Roo::Spreadsheet.open(source_path.to_s, extension: ext_sym)
-    else
-      Roo::Spreadsheet.open(source_path.to_s)
-    end
-
-    # Find actual sheet name (handle whitespace normalization)
     sheet_name_normalized = normalize_sheet_name(@sheet_config.sheet_name)
     actual_sheet_name = workbook.sheets.find do |name|
       normalize_sheet_name(name) == sheet_name_normalized
@@ -60,16 +42,14 @@ class CatalogIndexer
     return { success: true } if last_row.nil?
 
     consecutive_empty_rows = 0
-    max_empty_rows = 50  # Stop after 50 consecutive empty rows
+    max_empty_rows = 50
 
     (1..last_row).each do |row_number|
-      # Extract values from configured columns
       codes = extract_cells(sheet, row_number, code_cols)
       descriptions = extract_cells(sheet, row_number, desc_cols)
       prices = extract_cells(sheet, row_number, price_cols, kind: :price)
       brands = extract_cells(sheet, row_number, brand_cols)
 
-      # Check if row is completely empty (no code, no desc, no price, no brand)
       row_empty = codes.all?(&:blank?) && descriptions.all?(&:blank?) && prices.all?(&:blank?) && brands.all?(&:blank?)
 
       if row_empty
@@ -80,16 +60,9 @@ class CatalogIndexer
         consecutive_empty_rows = 0
       end
 
-      # Skip row if no valid code found
       next if codes.empty? || codes.all?(&:blank?)
-
-      # Skip header-like rows (heuristic: code looks like a header word)
       next if looks_like_header?(codes.first)
 
-      # If code_cols and price_cols have same length, pair them by index.
-      # If there is a single price value in the row, reuse it for all codes.
-      # Otherwise (multiple prices, different number of columns), fall back to
-      # the first price found.
       paired = code_cols.size == price_cols.size && code_cols.size > 0
 
       single_row_price = nil
@@ -105,10 +78,6 @@ class CatalogIndexer
         description = descriptions.join(" | ").presence
         brand = brands.join(" | ").presence
 
-        # Special case:
-        # - One code column
-        # - Multiple price columns
-        # => create one item per price value (same code/row_number)
         if codes.size == 1 && !paired && parsed_prices.size > 1
           parsed_prices.each do |price|
             dedup_key = [code_value, description, price.to_s, brand]
@@ -127,10 +96,6 @@ class CatalogIndexer
           next
         end
 
-        # Special case:
-        # - Multiple codes
-        # - Multiple price columns (not paired)
-        # => create one item per (code, price) combination in the row
         if codes.size > 1 && !paired && parsed_prices.size > 1
           parsed_prices.each do |price|
             dedup_key = [code_value, description, price.to_s, brand]
@@ -150,24 +115,17 @@ class CatalogIndexer
         end
 
         price = if paired && prices[idx].present?
-          # One price column per code column – use the price that shares index.
           parse_price(prices[idx])
         elsif single_row_price
-          # Exactly one price value in the row – reuse it for all codes.
           single_row_price
         elsif parsed_prices.any?
-          # Multiple prices but different number of columns – best effort: first parsed price.
           parsed_prices.first
         else
           nil
         end
 
-        # Skip if no price (price is required, description is optional)
         next if price.nil?
 
-        # Deduplicate exact duplicates within this sheet_config: if another row
-        # already produced the same combination of code, description, price and
-        # brand in this indexing run, skip creating it again.
         dedup_key = [code_value, description, price.to_s, brand]
         next if seen_items.include?(dedup_key)
         seen_items << dedup_key
@@ -190,6 +148,27 @@ class CatalogIndexer
   end
 
   private
+
+  def resolve_source_path
+    if @catalog.excel_file.attached?
+      # Archivo xlsx generado desde PDF — siempre es xlsx
+      path = FileCache.fetch(@catalog.excel_file.blob).to_s
+      return [path, :xlsx]
+    end
+
+    # Archivo original subido por el usuario
+    cached_path = FileCache.fetch(@catalog.file.blob).to_s
+
+    # Leer extensión desde el filename original del blob, nunca del path cacheado
+    # porque FileCache genera nombres con sufijos random que confunden a Roo
+    ext = File.extname(@catalog.file.blob.filename.to_s).downcase.strip
+    ext_sym = ext.present? ? ext.delete_prefix(".").to_sym : nil
+
+    # Si la extensión es pdf, el excel todavía no fue generado
+    return [cached_path, nil] if ext_sym == :pdf || ext_sym.nil?
+
+    [cached_path, ext_sym]
+  end
 
   def normalize_sheet_name(value)
     value.to_s.strip.gsub(/\s+/, ' ')
@@ -214,11 +193,12 @@ class CatalogIndexer
       text_value = if kind == :price && raw_value.is_a?(Numeric)
         format('%.2f', raw_value.to_f)
       elsif raw_value.is_a?(Float) && raw_value == raw_value.to_i
-        # Convert 12345.0 to "12345" for codes
         raw_value.to_i.to_s
       else
         raw_value.to_s.strip
       end
+
+      text_value = strip_html(text_value)
 
       values << text_value unless text_value.blank?
     end
@@ -229,11 +209,9 @@ class CatalogIndexer
     s = value.to_s.strip
     return nil if s.blank?
 
-    # Remove currency symbols and spaces
     s = s.gsub(/[^0-9,\.\-]/, '')
     return nil if s.blank?
 
-    # Handle different decimal/thousand separators
     if s.include?('.') && s.include?(',')
       if s.rindex(',') > s.rindex('.')
         s = s.delete('.').tr(',', '.')
@@ -241,7 +219,6 @@ class CatalogIndexer
         s = s.delete(',')
       end
     elsif s.include?(',')
-      # Could be decimal separator or thousand separator
       if s.match?(/\A\d{1,3}(?:,\d{3})+(?:\.\d+)?\z/)
         s = s.delete(',')
       else
@@ -263,5 +240,10 @@ class CatalogIndexer
     header_words = %w[codigo código code ref referencia reference item producto product sku]
 
     header_words.any? { |word| normalized == word || normalized.start_with?("#{word}.") }
+  end
+
+  def strip_html(value)
+    return value unless value.to_s.match?(/<[^>]+>/)
+    ActionView::Base.full_sanitizer.sanitize(value.to_s).strip
   end
 end

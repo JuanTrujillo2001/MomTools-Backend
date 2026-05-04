@@ -67,6 +67,8 @@ class CatalogPdfToExcelJob < ApplicationJob
       end
     end
 
+    SheetConfigAutoConfigureJob.perform_later(catalog.id)
+
     catalog.update!(pdf_to_excel_status: "done", pdf_to_excel_finished_at: Time.current)
   rescue StandardError => e
     Rails.logger.error("[CatalogPdfToExcelJob] Error catalog_id=#{catalog_id}: #{e.class} - #{e.message}")
